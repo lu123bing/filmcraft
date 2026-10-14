@@ -2076,6 +2076,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-hevcenc"
+version = "0.7.2"
+dependencies = [
+ "filmcraft-bitstream",
+ "filmcraft-testkit",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "filmcraft-interchange"
 version = "0.9.0"
 dependencies = [
