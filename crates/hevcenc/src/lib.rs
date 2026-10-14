@@ -23,29 +23,24 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
-mod params;
-#[allow(dead_code)]
-mod ratecontrol;
-// Consumed progressively by the coding modules landing later in this PR;
-// the allowances go away once the slice encoder uses every item.
-#[allow(dead_code)]
 mod cabac;
-#[allow(dead_code)]
 mod deblock;
-#[allow(dead_code)]
 mod dsp;
-#[allow(dead_code)]
 mod inter;
-#[allow(dead_code)]
 mod intra;
-#[allow(dead_code)]
 mod lookahead;
-#[allow(dead_code)]
+mod params;
 mod picture;
+mod ratecontrol;
+mod slice;
+// Normative tables with subsets reserved for follow-up tools (SAO, tiles, WPP, range extensions).
 #[allow(dead_code)]
 mod tables;
-#[allow(dead_code)]
 mod transform;
+
+use lookahead::{LowRes, aq_offsets, complexity, is_scene_cut};
+use picture::{Frame, RefPic, import_yuv};
+use ratecontrol::Rc;
 
 pub use ratecontrol::{FrameStat, PassStats};
 
@@ -236,6 +231,19 @@ pub struct Encoder {
     vps: Vec<u8>,
     sps: Vec<u8>,
     pps: Vec<u8>,
+    init_qp: i32,
+    log2_max_poc_lsb: u32,
+    coded_w: usize,
+    coded_h: usize,
+    ctbs_w: usize,
+    ctbs_h: usize,
+    cur: Frame,
+    ref_pic: Option<RefPic>,
+    poc: u32,
+    rc: Rc,
+    lowres_prev: Option<LowRes>,
+    lowres_prev_cplx: Option<lookahead::Complexity>,
+    first_picture: bool,
     capture_recon: bool,
     recon: Vec<ReconFrame>,
 }
@@ -288,6 +296,7 @@ impl Encoder {
             RateControl::Crf(crf) => crf.round() as i32,
             RateControl::Cbr { .. } | RateControl::Vbr { .. } => 26,
         };
+        let poc_lsb_minus4 = params::poc_lsb_minus4(cfg.keyint);
         let sps = params::Sps {
             width: cfg.width,
             height: cfg.height,
@@ -296,12 +305,40 @@ impl Encoder {
             fps_num: cfg.fps_num,
             fps_den: cfg.fps_den,
             level_idc,
-            poc_lsb_minus4: params::poc_lsb_minus4(cfg.keyint),
+            poc_lsb_minus4,
         };
         let vps = params::assemble(params::NAL_VPS, &params::Vps { level_idc }.rbsp());
         let sps = params::assemble(params::NAL_SPS, &sps.rbsp());
         let pps = params::assemble(params::NAL_PPS, &params::Pps { init_qp }.rbsp());
-        Ok(Encoder { cfg, level_idc, vps, sps, pps, capture_recon: false, recon: Vec::new() })
+        // Coded (CTU-aligned) geometry and the reconstruction working buffer.
+        let coded_w = (cfg.width as usize).div_ceil(64) * 64;
+        let coded_h = (cfg.height as usize).div_ceil(64) * 64;
+        let cur = Frame::new(coded_w, coded_h, crate::slice::REF_PAD);
+        // Frame-level rate control: Single shares Rc::new, First collects pass-1 stats.
+        let fps = cfg.fps_num as f64 / cfg.fps_den.max(1) as f64;
+        let rc = if matches!(cfg.pass, Pass::First) { Rc::new_first_pass(cfg.rate, fps, None) } else { Rc::new(cfg.rate, fps, None) };
+        Ok(Encoder {
+            cfg,
+            level_idc,
+            vps,
+            sps,
+            pps,
+            init_qp,
+            log2_max_poc_lsb: poc_lsb_minus4 + 4,
+            coded_w,
+            coded_h,
+            ctbs_w: coded_w.div_ceil(64),
+            ctbs_h: coded_h.div_ceil(64),
+            cur,
+            ref_pic: None,
+            poc: 0,
+            rc,
+            lowres_prev: None,
+            lowres_prev_cplx: None,
+            first_picture: true,
+            capture_recon: false,
+            recon: Vec::new(),
+        })
     }
 
     pub fn config(&self) -> &EncoderConfig {
@@ -339,19 +376,122 @@ impl Encoder {
         std::mem::take(&mut self.recon)
     }
 
-    /// First-pass statistics (`Some` only for [`Pass::First`]).
+    /// First-pass statistics (`Some` only for [`Pass::First`], collected by [`Rc`]).
     pub fn pass_stats(&self) -> Option<PassStats> {
-        if matches!(self.cfg.pass, Pass::First) { Some(PassStats::default()) } else { None }
+        if matches!(self.cfg.pass, Pass::First) { self.rc.first_pass_stats() } else { None }
     }
 
     pub fn encode(&mut self, frame: &YuvFrame<'_>, pts: i64) -> Result<Vec<Packet>, Error> {
         self.try_encode(frame, pts)
     }
 
-    pub fn try_encode(&mut self, _frame: &YuvFrame<'_>, _pts: i64) -> Result<Vec<Packet>, Error> {
-        Err(Error::Unsupported("picture coding arrives with the slice encoder".to_string()))
+    pub fn try_encode(&mut self, frame: &YuvFrame<'_>, pts: i64) -> Result<Vec<Packet>, Error> {
+        // Import the visible picture into a coded-size source frame (edges replicate over the overhang).
+        let mut src = Frame::new(self.coded_w, self.coded_h, crate::slice::REF_PAD);
+        import_yuv(frame.y, frame.u, frame.v, frame.y_stride, frame.uv_stride, self.cfg.width as usize, self.cfg.height as usize, &mut src)?;
+        // Half-res lookahead + complexity against the previous picture.
+        let lowres = LowRes::new(&src);
+        let cplx = complexity(&lowres, self.lowres_prev.as_ref());
+        let scenecut =
+            self.cfg.scenecut && !self.first_picture && self.lowres_prev_cplx.is_some() && is_scene_cut(self.lowres_prev_cplx.as_ref().unwrap_or(&cplx), &cplx);
+        // IDR decision mirrors h264enc: first picture, keyint interval, or a scene cut.
+        let since_idr = self.poc;
+        let is_idr = self.first_picture || since_idr >= self.cfg.keyint.max(1) || scenecut;
+        let poc = if is_idr { 0 } else { self.poc };
+        // Frame QP from rate control (I/IDR uses QP-2 inside Rc).
+        let slice_qp = self.rc.frame_qp(is_idr, &cplx);
+        // Per-CTU AQ offsets (exactly 0 when strength is 0).
+        let aq = aq_offsets(&src, self.ctbs_w, self.ctbs_h, self.cfg.aq_strength);
+        // Code the single slice (recon is written post-deblock into self.cur).
+        let out = crate::slice::code_picture(
+            &src,
+            &mut self.cur,
+            self.ref_pic.as_ref(),
+            is_idr,
+            poc,
+            self.log2_max_poc_lsb,
+            self.init_qp,
+            slice_qp,
+            self.cfg.preset,
+            &aq,
+        )?;
+        // NAL assembly: AnnexB = [AUD] + [VPS,SPS,PPS on IDR] + [prefix SEI on the first picture only] + slice.
+        let aud_primary = if is_idr { 0 } else { 1 };
+        let slice_nal = out.slice_nal;
+        let (packet_data, bits) = if self.cfg.format == PacketFormat::AnnexB {
+            let mut nals: Vec<Vec<u8>> = Vec::new();
+            if self.cfg.aud {
+                nals.push(params::assemble(params::NAL_AUD, &crate::slice::aud_rbsp(aud_primary)));
+            }
+            if is_idr {
+                nals.push(self.vps.clone());
+                nals.push(self.sps.clone());
+                nals.push(self.pps.clone());
+            }
+            if self.first_picture {
+                nals.push(params::assemble(params::NAL_SEI_PREFIX, &crate::slice::sei_prefix_rbsp()));
+            }
+            nals.push(slice_nal);
+            let packet_data = params::frame_annexb(&nals.iter().map(|n| n.as_slice()).collect::<Vec<_>>());
+            let bits = (packet_data.len() as u64).saturating_mul(8);
+            (packet_data, bits)
+        } else {
+            let packet_data = params::frame_length_prefixed(&[slice_nal.as_slice()]);
+            let bits = (packet_data.len() as u64).saturating_mul(8);
+            (packet_data, bits)
+        };
+        self.rc.update(bits, is_idr);
+        self.rc.record_first_pass(FrameStat { slice_type: if is_idr { 0 } else { 1 }, qscale: slice_qp as f32, bits });
+        // DPB: this picture becomes the single reference (edges extended for sub-pel MC).
+        self.cur.y.extend_edges();
+        self.cur.u.extend_edges();
+        self.cur.v.extend_edges();
+        if self.capture_recon {
+            let (w, h) = (self.cfg.width as usize, self.cfg.height as usize);
+            // `copy_out` yields coded-size rows; crop to the visible window here.
+            let mut full_y = Vec::new();
+            self.cur.y.copy_out(&mut full_y);
+            let mut full_u = Vec::new();
+            self.cur.u.copy_out(&mut full_u);
+            let mut full_v = Vec::new();
+            self.cur.v.copy_out(&mut full_v);
+            let (cw, ch) = (self.coded_w, self.coded_h);
+            let (cw2, _ch2) = (cw / 2, ch / 2);
+            let mut y = Vec::with_capacity(w.saturating_mul(h));
+            for yy in 0..h {
+                let s = yy.saturating_mul(cw);
+                if let Some(row) = full_y.get(s..s.saturating_add(w)) {
+                    y.extend_from_slice(row);
+                } else {
+                    y.extend(std::iter::repeat_n(128, w));
+                }
+            }
+            let mut u = Vec::with_capacity(w.saturating_mul(h) / 4);
+            let mut v = Vec::with_capacity(w.saturating_mul(h) / 4);
+            for yy in 0..h / 2 {
+                let s = yy.saturating_mul(cw2);
+                if let Some(row) = full_u.get(s..s.saturating_add(w / 2)) {
+                    u.extend_from_slice(row);
+                } else {
+                    u.extend(std::iter::repeat_n(128, w / 2));
+                }
+                if let Some(row) = full_v.get(s..s.saturating_add(w / 2)) {
+                    v.extend_from_slice(row);
+                } else {
+                    v.extend(std::iter::repeat_n(128, w / 2));
+                }
+            }
+            self.recon.push(ReconFrame { pts, y, u, v });
+        }
+        self.ref_pic = Some(RefPic { frame: self.cur.clone() });
+        self.lowres_prev = Some(lowres);
+        self.lowres_prev_cplx = Some(cplx);
+        self.poc = if is_idr { 1 } else { self.poc.saturating_add(1) };
+        self.first_picture = false;
+        Ok(vec![Packet { data: packet_data, pts, dts: pts, keyframe: is_idr, frame_type: if is_idr { FrameType::Idr } else { FrameType::P }, qp: slice_qp }])
     }
 
+    /// Reorder delay is 0 (no B-frames); nothing is buffered, so flushing yields no packets.
     pub fn flush(&mut self) -> Vec<Packet> {
         Vec::new()
     }

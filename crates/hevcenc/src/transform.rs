@@ -90,27 +90,7 @@ fn fwd_dct(block: &[i16], stride: usize, n: usize, out: &mut [i32]) {
     }
 }
 
-/// Forward 4x4 DCT of a residual block (`block[y * stride + x]`, output raster `out`).
-pub fn fwd4(block: &[i16], stride: usize, out: &mut [i32; 16]) {
-    fwd_dct(block, stride, 4, &mut out[..]);
-}
-
-/// Forward 8x8 DCT (same layout as `fwd4`).
-pub fn fwd8(block: &[i16], stride: usize, out: &mut [i32; 64]) {
-    fwd_dct(block, stride, 8, &mut out[..]);
-}
-
-/// Forward 16x16 DCT (same layout as `fwd4`).
-pub fn fwd16(block: &[i16], stride: usize, out: &mut [i32; 256]) {
-    fwd_dct(block, stride, 16, &mut out[..]);
-}
-
-/// Forward 32x32 DCT (same layout as `fwd4`).
-pub fn fwd32(block: &[i16], stride: usize, out: &mut [i32; 1024]) {
-    fwd_dct(block, stride, 32, &mut out[..]);
-}
-
-/// Forward 4x4 DST-VII for luma intra (spec 8-315/8-316). Same shifts as `fwd4`: DST row norms match DCT-4.
+/// Forward 4x4 DST-VII for luma intra (spec 8-315/8-316). Same shifts as the 4x4 DCT: DST row norms match DCT-4.
 pub fn fwd_dst4(block: &[i16], stride: usize, out: &mut [i32; 16]) {
     let mut tmp = [0i32; 16];
     for y in 0..4 {
@@ -210,21 +190,6 @@ pub fn inv4(coeffs: &[i32; 16], dst: bool, out: &mut [i32; 16]) {
     }
 }
 
-/// Inverse 8x8 DCT (same layout as `inv4`).
-pub fn inv8(coeffs: &[i32; 64], out: &mut [i32; 64]) {
-    inv_core(&coeffs[..], 8, false, &mut out[..]);
-}
-
-/// Inverse 16x16 DCT (same layout as `inv4`).
-pub fn inv16(coeffs: &[i32; 256], out: &mut [i32; 256]) {
-    inv_core(&coeffs[..], 16, false, &mut out[..]);
-}
-
-/// Inverse 32x32 DCT (same layout as `inv4`).
-pub fn inv32(coeffs: &[i32; 1024], out: &mut [i32; 1024]) {
-    inv_core(&coeffs[..], 32, false, &mut out[..]);
-}
-
 /// Inverse transform dispatch for `n` in {4, 8, 16, 32}; `dst` selects DST (honoured only for `n == 4`).
 /// Short buffers leave `out` untouched instead of panicking, like [`fwd_block`].
 pub fn inv_block(coeffs: &[i32], n: usize, dst: bool, out: &mut [i32]) {
@@ -243,36 +208,12 @@ pub fn inv_block(coeffs: &[i32], n: usize, dst: bool, out: &mut [i32]) {
             inv4(&c, dst, &mut o);
             out[..16].copy_from_slice(&o);
         }
-        8 => {
-            let mut c = [0i32; 64];
-            c.copy_from_slice(&coeffs[..64]);
-            let mut o = [0i32; 64];
-            inv8(&c, &mut o);
-            out[..64].copy_from_slice(&o);
-        }
-        16 => {
-            let mut c = [0i32; 256];
-            c.copy_from_slice(&coeffs[..256]);
-            let mut o = [0i32; 256];
-            inv16(&c, &mut o);
-            out[..256].copy_from_slice(&o);
-        }
-        32 => {
-            let mut c = [0i32; 1024];
-            c.copy_from_slice(&coeffs[..1024]);
-            let mut o = [0i32; 1024];
-            inv32(&c, &mut o);
-            out[..1024].copy_from_slice(&o);
-        }
+        8 => inv_core(&coeffs[..64], 8, false, &mut out[..64]),
+        16 => inv_core(&coeffs[..256], 16, false, &mut out[..256]),
+        32 => inv_core(&coeffs[..1024], 32, false, &mut out[..1024]),
         // Unreachable after the size check above; kept for exhaustiveness.
         _ => {}
     }
-}
-
-/// DC-only inverse: every sample gets the same value (decoder fast path for `max_x == max_y == 0`).
-pub fn inv_dc(dc: i32) -> i32 {
-    let e = ((64i64 * i64::from(dc) + 64) >> 7).clamp(-32768, 32767) as i32;
-    ((64i64 * i64::from(e) + (1 << 11)) >> 12) as i32
 }
 
 /// Quantise `log2N` block in place into levels; returns the non-zero count. `unsigned_abs` avoids any `i32::MIN` hazard.
@@ -302,26 +243,6 @@ fn dequant_run(c: &mut [i32], log2: u32, qp: u8) {
     }
 }
 
-/// Quantise a 4x4 coefficient block in place; returns the non-zero level count.
-pub fn quant4(c: &mut [i32; 16], qp: u8, dz: Deadzone) -> u32 {
-    quant_run(&mut c[..], 2, qp, dz)
-}
-
-/// Quantise an 8x8 coefficient block in place; returns the non-zero level count.
-pub fn quant8(c: &mut [i32; 64], qp: u8, dz: Deadzone) -> u32 {
-    quant_run(&mut c[..], 3, qp, dz)
-}
-
-/// Quantise a 16x16 coefficient block in place; returns the non-zero level count.
-pub fn quant16(c: &mut [i32; 256], qp: u8, dz: Deadzone) -> u32 {
-    quant_run(&mut c[..], 4, qp, dz)
-}
-
-/// Quantise a 32x32 coefficient block in place; returns the non-zero level count.
-pub fn quant32(c: &mut [i32; 1024], qp: u8, dz: Deadzone) -> u32 {
-    quant_run(&mut c[..], 5, qp, dz)
-}
-
 /// Quantise an `n`x`n` block (`n` in {4, 8, 16, 32}); short buffers or other sizes are a no-op returning 0.
 pub fn quant_block(c: &mut [i32], n: usize, qp: u8, dz: Deadzone) -> u32 {
     let log2 = match n {
@@ -335,26 +256,6 @@ pub fn quant_block(c: &mut [i32], n: usize, qp: u8, dz: Deadzone) -> u32 {
         return 0;
     }
     quant_run(&mut c[..n * n], log2, qp, dz)
-}
-
-/// Dequantise a 4x4 level block in place (decoder-exact).
-pub fn dequant4(c: &mut [i32; 16], qp: u8) {
-    dequant_run(&mut c[..], 2, qp);
-}
-
-/// Dequantise an 8x8 level block in place (decoder-exact).
-pub fn dequant8(c: &mut [i32; 64], qp: u8) {
-    dequant_run(&mut c[..], 3, qp);
-}
-
-/// Dequantise a 16x16 level block in place (decoder-exact).
-pub fn dequant16(c: &mut [i32; 256], qp: u8) {
-    dequant_run(&mut c[..], 4, qp);
-}
-
-/// Dequantise a 32x32 level block in place (decoder-exact).
-pub fn dequant32(c: &mut [i32; 1024], qp: u8) {
-    dequant_run(&mut c[..], 5, qp);
 }
 
 /// Dequantise an `n`x`n` block (`n` in {4, 8, 16, 32}); short buffers or other sizes are a no-op.
@@ -470,8 +371,8 @@ mod tests {
         }
         let mut a = [0i32; 16];
         let mut b = [0i32; 16];
-        fwd4(&dense, 4, &mut a);
-        fwd4(&strided, 6, &mut b);
+        fwd_block(&dense, 4, 4, false, &mut a);
+        fwd_block(&strided, 6, 4, false, &mut b);
         assert_eq!(a, b);
     }
 
@@ -491,14 +392,6 @@ mod tests {
             inv_block(&c, n, false, &mut rec);
             assert!(rec.iter().all(|&v| v == 10), "n={n}: {rec:?}");
         }
-        // The full inverse of a DC-only block equals the `inv_dc` fast path (decoder behaviour).
-        for dc in [-300, -1, 0, 1, 7, 64, 1000, 32767] {
-            let mut c = [0i32; 16];
-            c[0] = dc;
-            let mut r = [0i32; 16];
-            inv4(&c, false, &mut r);
-            assert!(r.iter().all(|&v| v == inv_dc(dc)), "dc={dc}: {r:?}");
-        }
     }
 
     #[test]
@@ -514,12 +407,12 @@ mod tests {
         // Sign symmetry: negatives quantise to the negation (no `abs` hazards by construction).
         let mut pos = [5000i32; 16];
         let mut neg = [-5000i32; 16];
-        assert_eq!(quant4(&mut pos, 22, Deadzone::INTER), quant4(&mut neg, 22, Deadzone::INTER));
+        assert_eq!(quant_block(&mut pos, 4, 22, Deadzone::INTER), quant_block(&mut neg, 4, 22, Deadzone::INTER));
         assert_eq!(pos, neg.map(|v| -v));
         // Dequant inverts quant within one residual-domain step `Qstep = 2*levelScale*2^(qp/6)/N`.
         let mut c = [5000i32; 16];
-        quant4(&mut c, 22, Deadzone::INTER);
-        dequant4(&mut c, 22);
+        quant_block(&mut c, 4, 22, Deadzone::INTER);
+        dequant_block(&mut c, 4, 22);
         let qstep = 2 * LEVEL_SCALE[(22 % 6) as usize] * (1 << (22 / 6)) / 4;
         assert!((c[0] - 5000).abs() <= qstep, "{}", c[0]);
     }
@@ -529,14 +422,14 @@ mod tests {
         let blk: [i16; 16] = [12, -7, 30, -22, 5, 18, -3, 9, -14, 26, -31, 4, 8, -11, 17, -6];
         let mut dct = [0i32; 16];
         let mut dst = [0i32; 16];
-        fwd4(&blk, 4, &mut dct);
-        fwd_dst4(&blk, 4, &mut dst);
+        fwd_block(&blk, 4, 4, false, &mut dct);
+        fwd_block(&blk, 4, 4, true, &mut dst);
         assert_ne!(dct, dst);
         let mut c = dst;
-        assert!(quant4(&mut c, 4, Deadzone::INTRA) > 0);
-        dequant4(&mut c, 4);
+        assert!(quant_block(&mut c, 4, 4, Deadzone::INTRA) > 0);
+        dequant_block(&mut c, 4, 4);
         let mut rec = [0i32; 16];
-        inv4(&c, true, &mut rec);
+        inv_block(&c, 4, true, &mut rec);
         let mut max = 0i32;
         for i in 0..16 {
             max = max.max((rec[i] - i32::from(blk[i])).abs());
@@ -549,14 +442,14 @@ mod tests {
         // Fixed coefficients including clipping extremes; both paths implement 8-314/8-317 independently.
         let c4: [i32; 16] = [1000, -700, 250, -40, 600, -30000, 80, -9, 0, 12345, 0, -32768, 0, 0, 32767, -1];
         let mut r4 = [0i32; 16];
-        inv4(&c4, false, &mut r4);
+        inv_block(&c4, 4, false, &mut r4);
         assert_eq!(r4, ref_inv4_dct(&c4));
         let mut c8 = [0i32; 64];
         for i in 0..64 {
             c8[i] = ((i * 7919 + 13) % 60001) as i32 - 30000;
         }
         let mut r8 = [0i32; 64];
-        inv8(&c8, &mut r8);
+        inv_block(&c8, 8, false, &mut r8);
         assert_eq!(r8, ref_inv8_dct(&c8));
     }
 

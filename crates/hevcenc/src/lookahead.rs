@@ -1,6 +1,7 @@
 //! Half-resolution lookahead analysis for rate control, scene-cut detection and adaptive quantisation.
 //! Mirrors `h264enc::lookahead` structure but at CTU granularity instead of 16x16 macroblocks.
 
+use crate::dsp::block_var;
 use crate::picture::Frame;
 
 /// Half-resolution luma from 2x2 box decimation; dims are ceil halves so odd sizes keep the edge pixel.
@@ -89,16 +90,8 @@ pub fn complexity(cur: &LowRes, prev: Option<&LowRes>) -> Complexity {
         for bx in 0..bw {
             let (x0, y0) = (bx * 8, by * 8);
             // Spatial energy proxy: variance (normalized by 64) keeps intra on the SAD scale.
-            let (mut s, mut ss) = (0u64, 0u64);
-            for dy in 0..8 {
-                let r = (y0 + dy) * cur.w + x0;
-                for dx in 0..8 {
-                    let v = u64::from(cur.y[r + dx]);
-                    s += v;
-                    ss += v * v;
-                }
-            }
-            let intra_c = ss.saturating_sub(s * s / 64) / 64;
+            let off = y0.saturating_mul(cur.w).saturating_add(x0);
+            let intra_c = u64::from(block_var(cur.y.get(off..).unwrap_or(&[]), cur.w, 8, 8)) / 64;
             ci += intra_c;
             if let Some(p) = prev {
                 // Temporal cost without motion search; identical inputs give exactly 0.

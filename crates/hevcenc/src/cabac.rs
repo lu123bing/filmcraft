@@ -58,9 +58,6 @@ pub struct CtxState {
     pub mps: u8,
 }
 
-/// Fixed non-adapting state for `end_of_slice_segment_flag` (NOTE 2 under Table 9-4).
-pub const FIXED_END_OF_SLICE: CtxState = CtxState { pstate: 63, mps: 0 };
-
 /// All slice contexts in spec Table 9-4 order; index via `crate::tables` bases (e.g. `SIG_COEFF`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CtxStates(pub [CtxState; NUM_CTX]);
@@ -387,7 +384,6 @@ mod tests {
     #[test]
     fn end_of_slice_flag_uses_fixed_non_adapting_state() {
         // NOTE 2 under Table 9-4 pins its decode to pStateIdx 63, valMps 0 with no adaptation.
-        assert_eq!(FIXED_END_OF_SLICE, CtxState { pstate: 63, mps: 0 });
         // The terminate path carries no context, so encoding the flag adapts nothing itself.
         let mut s = CtxStates::new();
         s.init(0, 26);

@@ -14,9 +14,6 @@ pub struct PreparedRefs {
     pub top: [u8; 65],
 }
 
-/// Alias for the §8.4.4 name used in the design docs; identical to [`PreparedRefs`].
-pub type IntraRefs = PreparedRefs;
-
 /// Build substituted (and, for luma, filtered) refs from reconstructed neighbours (§8.4.4.2.2/2.3). `top`/`left` hold
 /// the `2*size` samples above/left of the TB with per-sample availability; `corner`/`avail_corner` is `p[-1][-1]`.
 /// `mode` gates the filter, `strong_smoothing` is the SPS flag, `is_luma` selects the luma-only filtering path.

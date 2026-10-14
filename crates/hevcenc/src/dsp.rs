@@ -97,9 +97,9 @@ pub fn block_var(a: &[u8], sa: usize, w: usize, h: usize) -> u32 {
     let mut sum = 0u64;
     let mut sq = 0u64;
     for r in 0..h {
-        let base = r * sa;
+        let base = r.saturating_mul(sa);
         for c in 0..w {
-            let v = a[base + c] as u64;
+            let v = u64::from(*a.get(base.saturating_add(c)).unwrap_or(&0));
             sum += v;
             sq += v * v;
         }

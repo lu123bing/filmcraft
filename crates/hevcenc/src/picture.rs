@@ -35,6 +35,18 @@ impl Plane {
         y.saturating_add(self.pad()).saturating_mul(self.stride).saturating_add(x.saturating_add(self.pad()))
     }
 
+    /// Set one visible sample; out-of-range writes are ignored, never panic.
+    /// This sidesteps the borrow checker where callers stage predictions into recon planes.
+    #[inline]
+    pub fn set(&mut self, x: usize, y: usize, v: u8) {
+        if x < self.w && y < self.h {
+            let pad = self.pad();
+            if let Some(s) = self.data.get_mut(y.saturating_add(pad).saturating_mul(self.stride).saturating_add(x.saturating_add(pad))) {
+                *s = v;
+            }
+        }
+    }
+
     /// Replicate the visible edges into all padding (short/degenerate buffers return unmodified, never panic).
     pub fn extend_edges(&mut self) {
         let pad = self.pad();
