@@ -1,5 +1,5 @@
 //! Clean-room, pure-Rust H.265/HEVC software encoder, written from the public
-//! ITU-T Rec. H.265 specification (v7, 08/2021; ISO/IEC 23008-2).
+//! ITU-T Rec. H.265 specification (v8, 08/2021; ISO/IEC 23008-2).
 //!
 //! Phase 1 (this crate today):
 //! - Main profile, 4:2:0 8-bit, frame coding; CTU 64 with CU splits down to 8x8.
@@ -25,6 +25,7 @@
 
 mod params;
 mod ratecontrol;
+mod tables;
 
 pub use ratecontrol::{FrameStat, PassStats};
 

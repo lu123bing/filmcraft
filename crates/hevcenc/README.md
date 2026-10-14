@@ -1,7 +1,7 @@
 # filmcraft-hevcenc
 
 A clean-room, pure-Rust H.265/HEVC software encoder for FilmCraft's export path, written from the
-public ITU-T Rec. H.265 specification (v7, 08/2021; ISO/IEC 23008-2) and general encoder
+public ITU-T Rec. H.265 specification (v8, 08/2021; ISO/IEC 23008-2) and general encoder
 literature. Layer L0: it depends only on `filmcraft-bitstream`, `thiserror` and (optionally,
 feature `threads`, on by default) `rayon`. No `unsafe`, builds for `wasm32-unknown-unknown`.
 
