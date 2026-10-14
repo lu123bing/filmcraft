@@ -24,13 +24,18 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 mod params;
+#[allow(dead_code)]
 mod ratecontrol;
 // Consumed progressively by the coding modules landing later in this PR;
 // the allowances go away once the slice encoder uses every item.
 #[allow(dead_code)]
 mod cabac;
 #[allow(dead_code)]
+mod deblock;
+#[allow(dead_code)]
 mod dsp;
+#[allow(dead_code)]
+mod inter;
 #[allow(dead_code)]
 mod intra;
 #[allow(dead_code)]
