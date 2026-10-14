@@ -212,13 +212,17 @@ pub const MAX_DIMENSION: u32 = 16384;
 /// The H.265 software encoder.
 pub struct Encoder {
     cfg: EncoderConfig,
+    level_idc: u8,
+    vps: Vec<u8>,
+    sps: Vec<u8>,
+    pps: Vec<u8>,
     capture_recon: bool,
     recon: Vec<ReconFrame>,
 }
 
 impl Encoder {
-    /// Validate the configuration. Coding lands in later commits; until then
-    /// [`Encoder::encode`] reports [`Error::Unsupported`].
+    /// Validate the configuration and write the parameter sets. Coding lands in
+    /// later commits; until then [`Encoder::encode`] reports [`Error::Unsupported`].
     pub fn new(cfg: EncoderConfig) -> Result<Self, Error> {
         if cfg.width == 0 || cfg.height == 0 || cfg.width % 2 != 0 || cfg.height % 2 != 0 || cfg.width > MAX_DIMENSION || cfg.height > MAX_DIMENSION {
             return Err(Error::InvalidDimensions(cfg.width, cfg.height));
@@ -252,11 +256,46 @@ impl Encoder {
         {
             return Err(Error::InvalidConfig(format!("illegal general_level_idc {level}")));
         }
-        Ok(Encoder { cfg, capture_recon: false, recon: Vec::new() })
+        let level_idc = cfg.level.unwrap_or_else(|| params::pick_level(cfg.width, cfg.height, cfg.fps_num, cfg.fps_den, params::target_kbps(cfg.rate)));
+        let init_qp = match cfg.rate {
+            RateControl::Qp(qp) => i32::from(qp),
+            RateControl::Crf(crf) => crf.round() as i32,
+            RateControl::Cbr { .. } | RateControl::Vbr { .. } => 26,
+        };
+        let sps = params::Sps {
+            width: cfg.width,
+            height: cfg.height,
+            sar: cfg.sar,
+            color: cfg.color,
+            fps_num: cfg.fps_num,
+            fps_den: cfg.fps_den,
+            level_idc,
+            poc_lsb_minus4: params::poc_lsb_minus4(cfg.keyint),
+            init_qp,
+        };
+        let vps = params::assemble(params::NAL_VPS, &params::Vps { level_idc }.rbsp());
+        let sps = params::assemble(params::NAL_SPS, &sps.rbsp());
+        let pps = params::assemble(params::NAL_PPS, &params::Pps { init_qp }.rbsp());
+        Ok(Encoder { cfg, level_idc, vps, sps, pps, capture_recon: false, recon: Vec::new() })
     }
 
     pub fn config(&self) -> &EncoderConfig {
         &self.cfg
+    }
+
+    /// Signalled `general_level_idc` (picked or overridden).
+    pub fn level_idc(&self) -> u8 {
+        self.level_idc
+    }
+
+    /// Complete VPS/SPS/PPS NAL units (headers included, framing excluded).
+    pub fn parameter_sets(&self) -> (&[u8], &[u8], &[u8]) {
+        (&self.vps, &self.sps, &self.pps)
+    }
+
+    /// `HEVCDecoderConfigurationRecord` for the MP4 `hvcC` box.
+    pub fn hvcc(&self) -> Vec<u8> {
+        params::hvcc(&self.vps, &self.sps, &self.pps, self.level_idc)
     }
 
     /// Reorder delay in pictures (phase 1 has no B-frames, always 0).
