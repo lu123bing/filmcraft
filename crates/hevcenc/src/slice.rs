@@ -456,13 +456,39 @@ fn amvp_predictor(grid: &Grid, xp: i32, yp: i32, w: i32, h: i32) -> Mv {
     }
 }
 
-/// AMVP two-candidate list mirroring the decoder single-ref path: `[left, above]`, missing entries are zero.
-/// Same-ref fast path (§8.5.3.2.7): with one reference scaling is identity, so neighbours apply directly.
+/// AMVP candidate list mirroring the decoder single-ref path: first available of {A0, A1},
+/// then first available of {B0, B1, B2} unless equal to the first; missing entries are zero.
+/// Positions compress (an unavailable side leaves no hole), so `mvp_flag` indexes the same
+/// candidate on both sides. No scaling (one reference is identity) and no temporal (the SPS
+/// disables TMVP), matching what the decoder derives in that configuration.
 fn amvp_list(grid: &Grid, xp: i32, yp: i32, w: i32, h: i32) -> [Mv; 2] {
-    let left = grid.mv_at(xp - 1, yp + h - 1).or_else(|| grid.mv_at(xp - 1, yp + h)).map(|m| m.0).unwrap_or(Mv { x: 0, y: 0 });
-    let above =
-        grid.mv_at(xp + w - 1, yp - 1).or_else(|| grid.mv_at(xp + w, yp - 1)).or_else(|| grid.mv_at(xp - 1, yp - 1)).map(|m| m.0).unwrap_or(Mv { x: 0, y: 0 });
-    [left, above]
+    let z = Mv { x: 0, y: 0 };
+    let a = grid.mv_at(xp - 1, yp + h).or_else(|| grid.mv_at(xp - 1, yp + h - 1)).map(|m| m.0);
+    let b = [grid.mv_at(xp + w, yp - 1), grid.mv_at(xp + w - 1, yp - 1), grid.mv_at(xp - 1, yp - 1)].into_iter().flatten().map(|m| m.0).next();
+    let mut list = [z, z];
+    if let Some(a) = a {
+        list[0] = a;
+        if let Some(b) = b
+            && b != a
+            && let Some(s) = list.get_mut(1)
+        {
+            *s = b;
+        }
+    } else if let Some(b) = b
+        && let Some(s) = list.get_mut(0)
+    {
+        *s = b;
+    }
+    list
+}
+
+/// MPM above-mode with the §8.4.2 CTU-row rule: the block above a CTU-row boundary is
+/// unavailable for the candidate list, so it contributes DC (`None`). Mirrors the decoder
+/// availability gate; without it the encoder signals REM values against a different list than
+/// the decoder derives (silent mode mismatch on the first CU row of every CTU row but the first).
+/// `CTU` is the fixed phase-1 CTU size, matching the SPS both sides share.
+fn mode_above_at(grid: &Grid, x0: i32, y0: i32) -> Option<u8> {
+    if y0 > 0 && y0 & (CTU as i32 - 1) != 0 { grid.mode_at(x0, y0 - 1) } else { None }
 }
 
 /// `rem_intra_luma_pred_mode` value whose decode yields `mode` (brute 0..32, deterministic).
@@ -635,25 +661,33 @@ fn write_merge<S: BinSink>(sink: &mut S, states: &mut CtxStates, merge: bool, id
     }
 }
 
-/// Generic `mvp_lX_flag` + `mvd_coding` writer (`greater0/1` context, EG1 + sign bypass).
+/// Generic `mvd_coding` + `mvp_lX_flag` writer (`greater0/1` context, EG1 + sign bypass).
+///
+/// Order follows the syntax: `mvd_coding` (both `greater0` flags, then `greater1` flags, then the
+/// per-component remainder + sign) comes BEFORE `mvp_lX_flag`. Emitting the predictor flag first
+/// hands the decoder's `greater0` loop predictor bits as motion bits (silent whole-slice desync on
+/// any AMVP block with a nonzero horizontal MVD history).
 fn write_amvp<S: BinSink>(sink: &mut S, states: &mut CtxStates, mvp_flag: u32, mvd: [i32; 2]) -> Result<(), Error> {
-    sink.decision(states, ctx_of(states, MVP_FLAG, 0), mvp_flag != 0);
+    let a = [mvd[0].unsigned_abs(), mvd[1].unsigned_abs()];
+    let g0 = [a[0] > 0, a[1] > 0];
+    sink.decision(states, ctx_of(states, ABS_MVD_GT0, 0), g0[0]);
+    sink.decision(states, ctx_of(states, ABS_MVD_GT0, 0), g0[1]);
+    let mut g1 = [false, false];
     for k in 0..2 {
-        let a = mvd[k].unsigned_abs();
-        let g0 = a > 0;
-        sink.decision(states, ctx_of(states, ABS_MVD_GT0, 0), g0);
-        let mut g1 = false;
-        if g0 {
-            g1 = a > 1;
-            sink.decision(states, ctx_of(states, ABS_MVD_GT1, 0), g1);
+        if g0[k] {
+            g1[k] = a[k] > 1;
+            sink.decision(states, ctx_of(states, ABS_MVD_GT1, 0), g1[k]);
         }
-        if g0 {
-            if g1 {
-                write_eg1(sink, a.wrapping_sub(2))?;
+    }
+    for k in 0..2 {
+        if g0[k] {
+            if g1[k] {
+                write_eg1(sink, a[k].wrapping_sub(2))?;
             }
             sink.bypass(mvd[k] < 0);
         }
     }
+    sink.decision(states, ctx_of(states, MVP_FLAG, 0), mvp_flag != 0);
     Ok(())
 }
 
@@ -676,7 +710,32 @@ fn write_qp_delta<S: BinSink>(sink: &mut S, states: &mut CtxStates, delta: i32) 
     Ok(())
 }
 
+/// Prefix index for one `last_sig_coeff` coordinate: the value whose suffix range holds `last`
+/// (truncated unary, `cmax` bins max).
+fn last_prefix(last: u32, cmax: u32) -> u32 {
+    if last <= 3 {
+        last.min(cmax)
+    } else {
+        let mut found = cmax;
+        for cand in 4..=cmax.max(4) {
+            let nb = (cand >> 1).saturating_sub(1);
+            let base_v = (1u32.checked_shl(nb).unwrap_or(0)).saturating_mul(2 + (cand & 1));
+            let next_nb = ((cand + 1) >> 1).saturating_sub(1);
+            let next_v = if cand >= cmax { u32::MAX } else { (1u32.checked_shl(next_nb).unwrap_or(0)).saturating_mul(2 + ((cand + 1) & 1)) };
+            if last >= base_v && last < next_v {
+                found = cand;
+                break;
+            }
+        }
+        found
+    }
+}
+
 /// `last_sig_coeff_x/y_prefix` + suffix writer (mirrors the decoder `off/shift/cmax` derivation).
+///
+/// `residual_coding` orders both prefixes before either suffix: emitting a suffix right after its
+/// own prefix would hand the decoder's `last_sig_coeff_y_prefix` loop bypass bits as context bins
+/// (silent whole-slice desync as soon as either coordinate exceeds 3).
 fn write_last_pos<S: BinSink>(sink: &mut S, states: &mut CtxStates, log2: u32, c: usize, last_x: u32, last_y: u32) -> Result<(), Error> {
     let cmax = log2.checked_shl(1).unwrap_or(0).saturating_sub(1);
     let (off, shift) = if c == 0 {
@@ -684,37 +743,26 @@ fn write_last_pos<S: BinSink>(sink: &mut S, states: &mut CtxStates, log2: u32, c
     } else {
         (15, log2.saturating_sub(2))
     };
-    for (base, last) in [(LAST_X_PREFIX, last_x), (LAST_Y_PREFIX, last_y)] {
-        // Prefix `px`: the value whose suffix range holds `last` (truncated unary, `cmax` bins max).
-        let px = if last <= 3 {
-            last.min(cmax)
-        } else {
-            {
-                let mut found = cmax;
-                for cand in 4..=cmax.max(4) {
-                    let nb = (cand >> 1).saturating_sub(1);
-                    let base_v = (1u32.checked_shl(nb).unwrap_or(0)).saturating_mul(2 + (cand & 1));
-                    let next_nb = ((cand + 1) >> 1).saturating_sub(1);
-                    let next_v = if cand >= cmax { u32::MAX } else { (1u32.checked_shl(next_nb).unwrap_or(0)).saturating_mul(2 + ((cand + 1) & 1)) };
-                    if last >= base_v && last < next_v {
-                        found = cand;
-                        break;
-                    }
-                }
-                found
-            }
-        };
+    let comps = [(LAST_X_PREFIX, last_x), (LAST_Y_PREFIX, last_y)];
+    let mut pxs = [0u32; 2];
+    for (k, (base, last)) in comps.iter().enumerate() {
+        let px = last_prefix(*last, cmax);
+        if let Some(s) = pxs.get_mut(k) {
+            *s = px;
+        }
         let mut p = 0u32;
         while p < px.min(cmax) {
-            sink.decision(states, ctx_of(states, base, (off + (p >> shift)) as usize), true);
+            sink.decision(states, ctx_of(states, *base, (off + (p >> shift)) as usize), true);
             p += 1;
         }
         if px < cmax {
-            sink.decision(states, ctx_of(states, base, (off + (px >> shift)) as usize), false);
+            sink.decision(states, ctx_of(states, *base, (off + (px >> shift)) as usize), false);
         }
-        if px > 3 {
-            let nb = (px >> 1).saturating_sub(1);
-            let base_v = (1u32.checked_shl(nb).unwrap_or(0)).saturating_mul(2 + (px & 1));
+    }
+    for ((_, last), px) in comps.iter().zip(pxs.iter()) {
+        if *px > 3 {
+            let nb = (*px >> 1).saturating_sub(1);
+            let base_v = (1u32.checked_shl(nb).unwrap_or(0)).saturating_mul(2 + (*px & 1));
             write_bypass_bits(sink, last.wrapping_sub(base_v), nb);
         }
     }
@@ -1136,7 +1184,7 @@ fn code_intra_cu(
         ctx.dec(PART_MODE, 0, true);
     }
     let left = if x0 > 0 { ctx.grid.mode_at(x0 as i32 - 1, y0 as i32) } else { None };
-    let above = if y0 > 0 { ctx.grid.mode_at(x0 as i32, y0 as i32 - 1) } else { None };
+    let above = mode_above_at(&ctx.grid, x0 as i32, y0 as i32);
     write_luma_mode(&mut ctx.enc, &mut ctx.states, luma_mode, left, above)?;
     write_chroma_mode(&mut ctx.enc, &mut ctx.states, chroma_mode);
     let eff_c = resolve_chroma_mode(chroma_mode, luma_mode)?;
@@ -1176,7 +1224,9 @@ fn code_intra_cu(
     ctx.dec(CBF_CHROMA, 0, nz_v > 0);
     ctx.dec(CBF_LUMA, 1, nz > 0);
     let any = (nz + nz_u + nz_v) > 0;
-    if any {
+    // The deblock map tracks LUMA occupancy only (chroma edges filter solely at bS 2,
+    // which needs an intra side): a chroma-only CU must not raise luma boundary strengths.
+    if nz > 0 {
         mark_luma_cbf(ctx, x0, y0, n);
     }
     if any && !ctx.is_qp_coded {
@@ -1217,7 +1267,8 @@ fn code_intra_cu(
         dist += ssd(&orig, n, &r, n, n, n);
     }
     let _ = depth;
-    Ok((dist, any))
+    // The caller records this in the luma deblock map: report luma occupancy, not combined.
+    Ok((dist, nz > 0))
 }
 
 /// Inter candidate kind for RD ordering.
@@ -1387,6 +1438,20 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
         (cands.first().map(|c| c.1).unwrap_or(InterKind::Skip { idx: zero_idx }), cands.first().map(|c| c.2.clone()).unwrap_or(vec![128u8; n * n]))
     };
     // Signal.
+    // A merge candidate whose residual is all zero must travel as skip (a merge-coded root
+    // always carries CBFs, so emitting skip bins after `skip_flag = 0` would desync the decoder).
+    // Probe BEFORE `skip_flag` is written; the branch below re-trials for levels when nonzero.
+    let kind = match kind {
+        InterKind::Merge { idx, mv } => {
+            let qp = QuantParams::new(qp_y, 0, 0);
+            let zero = matches!(
+                trial_merge_residual(src, ref_pic, x0, y0, n, mv, qp),
+                Ok((_, mnz, _, mnzu, _, mnzv, _, _, _)) if mnz + mnzu + mnzv == 0
+            );
+            if zero { InterKind::Skip { idx } } else { InterKind::Merge { idx, mv } }
+        }
+        k => k,
+    };
     let is_skip = matches!(kind, InterKind::Skip { .. });
     write_skip(&mut ctx.enc, &mut ctx.states, &ctx.grid, x0, y0, is_skip);
     if is_skip {
@@ -1398,12 +1463,10 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
     ctx.dec(PART_MODE, 0, true);
     let (mv, is_merge) = match kind {
         InterKind::Merge { idx, mv } => {
-            // Trial first: an all-zero residual must travel as skip (merge infers rqt=1, which forbids it).
+            // Levels for the merge residual (an all-zero residual was converted to skip above,
+            // before `skip_flag` was written, so this path always carries coefficients).
             let qp = QuantParams::new(qp_y, 0, 0);
             let (mlv, mnz, mlvu, mnzu, mlvv, mnzv, mpred, mcu, mcv) = trial_merge_residual(src, ref_pic, x0, y0, n, mv, qp)?;
-            if mnz + mnzu + mnzv == 0 {
-                return emit_skip(src, recon, ctx, ref_pic, &list, idx, x0, y0, n, cn, log2, &orig, &mpred);
-            }
             write_merge(&mut ctx.enc, &mut ctx.states, true, idx, MAX_MERGE);
             // Root-only TU: split flag 0, then chroma CBFs, then luma CBF (skipped when both chroma are zero).
             ctx.dec(SPLIT_TRANSFORM, 5 - log2 as usize, false);
@@ -1413,7 +1476,8 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
                 ctx.dec(CBF_LUMA, 1, mnz > 0);
             }
             let any = (mnz + mnzu + mnzv) > 0;
-            if any {
+            // Luma occupancy only (see the intra path): chroma-only residue must not raise luma bS.
+            if mnz > 0 {
                 mark_luma_cbf(ctx, x0, y0, n);
             }
             if any && !ctx.is_qp_coded {
@@ -1441,7 +1505,7 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
             dist += ssd(&orig, n, &r, n, n, n);
             ctx.grid.fill_cu(x0, y0, n, Some((mv, 0)), false, false, log2_to_depth(log2), None);
             ctx.mark_cu(x0, y0, n);
-            mark_maps_inter(ctx, x0, y0, n, any, mv, ctx.ctu_qp);
+            mark_maps_inter(ctx, x0, y0, n, mnz > 0, mv, ctx.ctu_qp);
             return Ok((dist, any));
         }
         InterKind::Amvp { mvp_flag, mv, mvd } => {
@@ -1515,7 +1579,8 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
         ctx.dec(CBF_LUMA, 1, nz > 0);
     }
     let any = (nz + nzu + nzv) > 0;
-    if any {
+    // Luma occupancy only (see the intra path): chroma-only residue must not raise luma bS.
+    if nz > 0 {
         mark_luma_cbf(ctx, x0, y0, n);
     }
     if any && !ctx.is_qp_coded {
@@ -1543,7 +1608,7 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
     }
     ctx.grid.fill_cu(x0, y0, n, Some((mv, 0)), false, false, log2_to_depth(log2), None);
     ctx.mark_cu(x0, y0, n);
-    mark_maps_inter(ctx, x0, y0, n, any, mv, ctx.ctu_qp);
+    mark_maps_inter(ctx, x0, y0, n, nz > 0, mv, ctx.ctu_qp);
     Ok((dist, any))
 }
 
@@ -1709,7 +1774,7 @@ fn code_cu(
     if is_idr {
         // Intra: choose luma + chroma modes by RD, then code.
         let left = if x0 > 0 { ctx.grid.mode_at(x0 as i32 - 1, y0 as i32) } else { None };
-        let above = if y0 > 0 { ctx.grid.mode_at(x0 as i32, y0 as i32 - 1) } else { None };
+        let above = mode_above_at(&ctx.grid, x0 as i32, y0 as i32);
         let lm = choose_luma_mode(src, recon, ctx, &ctx.grid, x0, y0, n, left, above)?;
         // Chroma: DM + 0..3 best by SSD + estimator bits.
         let cn = (n / 2).max(4);

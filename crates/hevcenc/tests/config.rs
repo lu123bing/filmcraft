@@ -43,12 +43,15 @@ fn rejects_bad_config() {
 }
 
 #[test]
-fn coding_reports_unsupported_until_the_slice_encoder_lands() {
+fn coding_encodes_a_flat_frame() {
     let mut enc = Encoder::new(EncoderConfig::new(64, 64, 30, 1)).unwrap();
     let (y, u, v) = frame_64();
     let frame = YuvFrame { y: &y, u: &u, v: &v, y_stride: 64, uv_stride: 32 };
-    let err = enc.encode(&frame, 0).unwrap_err();
-    assert!(format!("{err}").starts_with("unsupported: "));
+    let packets = enc.encode(&frame, 0).unwrap();
+    assert_eq!(packets.len(), 1);
+    assert!(packets[0].keyframe);
+    assert!(!packets[0].data.is_empty());
     assert!(enc.flush().is_empty());
+    // Recon capture stays off unless enabled.
     assert!(enc.take_recon().is_empty());
 }

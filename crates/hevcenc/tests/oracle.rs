@@ -130,7 +130,10 @@ fn verify_conformance(name: &str, run: &Run, w: usize, h: usize, n: usize) {
 
 fn verify_bit_exact(name: &str, run: &Run, w: usize, h: usize, n: usize) {
     let dir = filmcraft_testkit::fixtures_dir(&format!("hevcenc/{name}"));
+    std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!("{name}.h265"));
+    // Write this run's own stream: an earlier conformance run may have left a stale file behind.
+    std::fs::write(&path, &run.stream).unwrap();
     let (err, dec) = ffmpeg_decode(&path);
     assert!(err.trim().is_empty(), "{name}: ffmpeg reported errors: {err}");
     let fs = w * h * 3 / 2;
@@ -170,19 +173,17 @@ fn conformance_ip_mixes_and_odd_sizes() {
     }
 }
 
-/// Bit-exact-vs-recon (post-deblock) on every frame.
-///
-/// Status: ignored — the encoder decodes silently with correct frame counts,
-/// but its reconstruction drifts from ffmpeg/own-decoder output as soon as a
-/// luma TB carries AC coefficients across more than one 4x4 sub-block
-/// (DC-only and single-sub-block TBs match bit-exactly; flat content and QP 51
-/// match; see `HEVC_KEEPK` bisect: DC+2AC passes, DC+3AC fails). Transform,
-/// quant/dequant, intra prediction, CABAC engine/init/tables and the full
-/// residual syntax (last-pos/scan/csbf/sig/GT1/GT2/signs/remaining) all audit
-/// clean against `filmcraft-hevc`; the drift is under active investigation.
-/// Remove `ignore` once the minimal multi-sub-block case round-trips.
+/// Bit-exact-vs-recon (post-deblock) on every frame: the captured encoder
+/// reconstruction must match ffmpeg's decode sample-for-sample (luma + chroma).
+/// This caught five silent-desync encoder bugs (all found by diffing the encoder's
+/// emitted bins against the decoder's parsed bins on the first failing TB/CU,
+/// then proving the fix bit-exact): `last_sig_coeff` suffixes emitted
+/// per-component instead of after both prefixes; a merge-with-zero-residual
+/// fallback signalling skip bins after `skip_flag = 0`; `mvp_flag` emitted before
+/// `mvd_coding` plus a non-compressing AMVP list; the MPM above-mode missing the
+/// CTU-row unavailability rule; and the deblock map conflating chroma-only
+/// residue into luma boundary strengths.
 #[test]
-#[ignore = "recon drifts on multi-sub-block AC TBs; conformance covered by conformance_ip_mixes_and_odd_sizes"]
 fn bit_exact_vs_recon() {
     let _ff = filmcraft_testkit::require_ffmpeg!();
     let _probe = filmcraft_testkit::require_ffprobe!();
