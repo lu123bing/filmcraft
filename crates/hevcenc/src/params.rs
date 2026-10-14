@@ -11,12 +11,16 @@ use filmcraft_bitstream::{BitWriter, escape_rbsp, unescape_rbsp};
 use crate::tables::LEVELS_MAIN;
 use crate::{ColorConfig, RateControl};
 
-/// NAL unit types the encoder emits.
+/// NAL unit types the encoder emits. `IDR_N_LP`, `AUD` and `SEI_PREFIX` are consumed
+/// by the slice encoder landing later in this PR.
+#[allow(dead_code)]
 pub const NAL_IDR_N_LP: u8 = 20;
 pub const NAL_VPS: u8 = 32;
 pub const NAL_SPS: u8 = 33;
 pub const NAL_PPS: u8 = 34;
+#[allow(dead_code)]
 pub const NAL_AUD: u8 = 35;
+#[allow(dead_code)]
 pub const NAL_SEI_PREFIX: u8 = 39;
 
 /// Legal `general_level_idc` values (H.265 Table A.8: levels 1–6.2, `30 * level`).
@@ -157,7 +161,6 @@ pub struct Sps {
     pub fps_den: u32,
     pub level_idc: u8,
     pub poc_lsb_minus4: u32,
-    pub init_qp: i32,
 }
 
 impl Sps {
@@ -278,6 +281,8 @@ pub fn assemble(nal_type: u8, rbsp: &[u8]) -> Vec<u8> {
 }
 
 /// Frame complete NAL units with `00 00 00 01` start codes (Annex B).
+/// Consumed by the slice encoder landing later in this PR.
+#[allow(dead_code)]
 pub fn frame_annexb(nals: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     for nal in nals {
@@ -288,6 +293,8 @@ pub fn frame_annexb(nals: &[&[u8]]) -> Vec<u8> {
 }
 
 /// Frame complete NAL units with 4-byte big-endian lengths (MP4 samples).
+/// Consumed by the slice encoder landing later in this PR.
+#[allow(dead_code)]
 pub fn frame_length_prefixed(nals: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     for nal in nals {

@@ -25,7 +25,16 @@
 
 mod params;
 mod ratecontrol;
+// Consumed progressively by the coding modules landing later in this PR;
+// the allowances go away once the slice encoder uses every item.
+#[allow(dead_code)]
+mod cabac;
+#[allow(dead_code)]
+mod intra;
+#[allow(dead_code)]
 mod tables;
+#[allow(dead_code)]
+mod transform;
 
 pub use ratecontrol::{FrameStat, PassStats};
 
@@ -224,7 +233,13 @@ impl Encoder {
     /// Validate the configuration and write the parameter sets. Coding lands in
     /// later commits; until then [`Encoder::encode`] reports [`Error::Unsupported`].
     pub fn new(cfg: EncoderConfig) -> Result<Self, Error> {
-        if cfg.width == 0 || cfg.height == 0 || cfg.width % 2 != 0 || cfg.height % 2 != 0 || cfg.width > MAX_DIMENSION || cfg.height > MAX_DIMENSION {
+        if cfg.width == 0
+            || cfg.height == 0
+            || !cfg.width.is_multiple_of(2)
+            || !cfg.height.is_multiple_of(2)
+            || cfg.width > MAX_DIMENSION
+            || cfg.height > MAX_DIMENSION
+        {
             return Err(Error::InvalidDimensions(cfg.width, cfg.height));
         }
         if cfg.fps_num == 0 || cfg.fps_den == 0 {
@@ -271,7 +286,6 @@ impl Encoder {
             fps_den: cfg.fps_den,
             level_idc,
             poc_lsb_minus4: params::poc_lsb_minus4(cfg.keyint),
-            init_qp,
         };
         let vps = params::assemble(params::NAL_VPS, &params::Vps { level_idc }.rbsp());
         let sps = params::assemble(params::NAL_SPS, &sps.rbsp());
