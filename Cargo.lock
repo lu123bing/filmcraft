@@ -1952,6 +1952,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-geom",
  "filmcraft-h264enc",
+ "filmcraft-hevcenc",
  "filmcraft-isobmff",
  "filmcraft-media",
  "filmcraft-mxf",
