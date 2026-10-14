@@ -30,7 +30,13 @@ mod ratecontrol;
 #[allow(dead_code)]
 mod cabac;
 #[allow(dead_code)]
+mod dsp;
+#[allow(dead_code)]
 mod intra;
+#[allow(dead_code)]
+mod lookahead;
+#[allow(dead_code)]
+mod picture;
 #[allow(dead_code)]
 mod tables;
 #[allow(dead_code)]
