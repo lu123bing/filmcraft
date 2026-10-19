@@ -205,14 +205,16 @@ impl ExrCompression {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum UncompressedPixelFormat {
-    /// 8-bit 4:2:2, `U Y0 V Y1` per pixel pair (`2vuy`): the widest compatibility, two bytes a
-    /// pixel.
+    /// 8-bit 4:2:2, `U Y0 V Y1` per pixel pair (`2vuy`): two bytes a pixel, the most widely
+    /// supported of the three layouts (read back verified against ffmpeg; QuickTime Player
+    /// and NLE verification is a follow-up).
     #[default]
     Uyvy8,
     /// 10-bit 4:2:2 (`v210`), the broadcast uncompressed format: 8 bytes for 6 pixels, and rows
     /// padded to a multiple of 48 pixels (128 bytes).
     V210,
-    /// 8-bit R, G, B with no chroma subsampling (`raw `), for graphics, keys and mattes.
+    /// 8-bit R, G, B with no chroma subsampling (`raw `), for graphics, keys and mattes
+    /// where RGB is required.
     Rgb24,
 }
 

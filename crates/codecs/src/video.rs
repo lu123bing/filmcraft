@@ -1257,9 +1257,12 @@ impl RawVideoDecoder {
     }
 
     /// Bytes per row: the layout's own stride, or the one a longer sample implies (never a shorter
-    /// one: a padded row is at least a tight row).
+    /// one: a padded row is at least a tight row). The sample-implied stride is only trusted
+    /// when the sample holds whole rows (`sample % height == 0`): trailing bytes shorter than
+    /// a row fall back to the tight layout, and trailing bytes of a full row or more that
+    /// still divide evenly are read as a wider stride (documented, pinned by test).
     fn stride(&self, sample: usize, tight: usize) -> usize {
-        match self.rows_from_sample && self.height > 0 {
+        match self.rows_from_sample && self.height > 0 && sample.is_multiple_of(self.height as usize) {
             true => (sample / self.height as usize).max(tight),
             false => tight,
         }
@@ -1492,6 +1495,17 @@ mod raw_tests {
         let mut d = RawVideoDecoder::quicktime(RawFormat::Rgb24, 2, 1).unwrap();
         let f = d.decode(&sample, 0).unwrap().remove(0).frame;
         assert_eq!(f.to_rgba8(), [1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    /// Trailing bytes shorter than a row do not shift row starts: a 2x2 RGB sample with
+    /// 3 trailing bytes still decodes the tight 2x2 picture, ignoring the tail.
+    #[test]
+    fn trailing_bytes_shorter_than_a_row_fall_back_to_tight() {
+        // tight rows: [1,2,3,4,5,6] + [7,8,9,10,11,12], then 3 trailing bytes.
+        let sample = vec![1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 99, 98, 97];
+        let mut d = RawVideoDecoder::quicktime(RawFormat::Rgb24, 2, 2).unwrap();
+        let f = d.decode(&sample, 0).unwrap().remove(0).frame;
+        assert_eq!(f.to_rgba8(), [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]);
     }
 
     /// What the sample entry says: `2vuy` and `v210` whatever their depth, `raw ` only at 24 bits.

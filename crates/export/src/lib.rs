@@ -94,6 +94,7 @@ pub enum Format {
     /// `2vuy`, 10-bit 4:2:2 `v210`, or 24-bit RGB `raw `) + PCM. Lossless and much larger than the
     /// codecs above. The picture is BT.709 limited range, which the sample entry's `colr` box
     /// signals: uncompressed video is the one format here with no colour description of its own.
+    /// HDR sequences tone-map to SDR, like Motion-JPEG.
     #[serde(rename = "uncompressed", alias = "Uncompressed")]
     Uncompressed,
     /// Numbered PNG stills ([`image_sequence_path`]).
