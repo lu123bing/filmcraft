@@ -114,8 +114,7 @@ fn ffmpeg_decode(path: &std::path::Path) -> (String, Vec<u8>) {
 }
 
 /// Silent decode + exact frame count + keyframe/DTS ordering (ffmpeg conformance).
-/// Bit-exact-vs-recon lives in `bit_exact_vs_recon` (ignored until the
-/// multi-coefficient residual drift is fixed; see that test).
+/// Pixel-exact coverage lives in `bit_exact_vs_recon` (enabled; see that test).
 fn verify_conformance(name: &str, run: &Run, w: usize, h: usize, n: usize) {
     let dir = filmcraft_testkit::fixtures_dir(&format!("hevcenc/{name}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -175,7 +174,7 @@ fn conformance_ip_mixes_and_odd_sizes() {
 
 /// Bit-exact-vs-recon (post-deblock) on every frame: the captured encoder
 /// reconstruction must match ffmpeg's decode sample-for-sample (luma + chroma).
-/// This caught five silent-desync encoder bugs (all found by diffing the encoder's
+/// This caught six silent-desync encoder bugs (all found by diffing the encoder's
 /// emitted bins against the decoder's parsed bins on the first failing TB/CU,
 /// then proving the fix bit-exact): `last_sig_coeff` suffixes emitted
 /// per-component instead of after both prefixes; a merge-with-zero-residual
