@@ -249,8 +249,8 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// Validate the configuration and write the parameter sets. Coding lands in
-    /// later commits; until then [`Encoder::encode`] reports [`Error::Unsupported`].
+    /// Validate the configuration and write the VPS/SPS/PPS. [`Error::Unsupported`]
+    /// is returned only for `Pass::Second` (two-pass is a follow-up).
     pub fn new(cfg: EncoderConfig) -> Result<Self, Error> {
         if cfg.width == 0
             || cfg.height == 0

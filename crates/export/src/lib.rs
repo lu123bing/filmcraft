@@ -66,14 +66,14 @@ pub enum Format {
     #[default]
     #[serde(rename = "h264", alias = "H264")]
     H264,
-    /// MPEG-4 (or QuickTime, see [`Multiplexer`]), H.265 / HEVC Main (8-bit) video + AAC audio. There is no
-    /// built-in software encoder (Main 8-bit SDR, single-slice I/P, `hvc1` + `hvcC`; HDR sequences
+    /// MPEG-4 (or QuickTime, see [`Multiplexer`]), H.265 / HEVC Main (8-bit) video + AAC audio. The
+    /// built-in software encoder writes Main 8-bit SDR, single-slice I/P, `hvc1` + `hvcC` (HDR sequences
     /// export as HDR only where an encoder also says so with [`register_hdr_probe`]
     /// ([`hdr_available`]); elsewhere they are tone-mapped to SDR). A platform hardware encoder
     /// may still register an alternative with [`register_encoder`].
     #[serde(rename = "hevc", alias = "Hevc")]
     Hevc,
-    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. Like H.265 it has no built-in encoder: offered
+    /// MPEG-4, AV1 Main (8-bit) video + AAC audio. It has no built-in encoder: offered
     /// where a hardware encoder registers one.
     #[serde(rename = "av1", alias = "Av1")]
     Av1,

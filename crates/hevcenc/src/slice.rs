@@ -1053,6 +1053,11 @@ struct PicCtx {
 }
 
 impl PicCtx {
+    /// QpY the decoder derives for the just-coded CU: predicted QP before the
+    /// first `cu_qp_delta` in this CTU (and for all-zero CTUs), coded CTU QP after.
+    fn cu_qp(&self) -> u8 {
+        if self.is_qp_coded { self.ctu_qp } else { clip_qp(self.qp_pred) }
+    }
     /// Mark CU boundaries BOTH tu and pu (mandatory equivalence assumption).
     fn mark_cu(&mut self, x0: usize, y0: usize, n: usize) {
         let (w8, h8) = (self.maps_w, self.maps_h);
@@ -1505,7 +1510,8 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
             dist += ssd(&orig, n, &r, n, n, n);
             ctx.grid.fill_cu(x0, y0, n, Some((mv, 0)), false, false, log2_to_depth(log2), None);
             ctx.mark_cu(x0, y0, n);
-            mark_maps_inter(ctx, x0, y0, n, mnz > 0, mv, ctx.ctu_qp);
+            let map_qp = ctx.cu_qp();
+            mark_maps_inter(ctx, x0, y0, n, mnz > 0, mv, map_qp);
             return Ok((dist, any));
         }
         InterKind::Amvp { mvp_flag, mv, mvd } => {
@@ -1548,7 +1554,8 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
             }
             ctx.grid.fill_cu(x0, y0, n, Some((mv, 0)), false, false, log2_to_depth(log2), None);
             ctx.mark_cu(x0, y0, n);
-            mark_maps_inter(ctx, x0, y0, n, false, mv, ctx.ctu_qp);
+            let map_qp = ctx.cu_qp();
+            mark_maps_inter(ctx, x0, y0, n, false, mv, map_qp);
             return Ok((ssd(&orig, n, &pred, n, n, n), false));
         }
     }
@@ -1608,7 +1615,8 @@ fn code_inter_cu(src: &Frame, recon: &mut Frame, ctx: &mut PicCtx, ref_pic: &Ref
     }
     ctx.grid.fill_cu(x0, y0, n, Some((mv, 0)), false, false, log2_to_depth(log2), None);
     ctx.mark_cu(x0, y0, n);
-    mark_maps_inter(ctx, x0, y0, n, nz > 0, mv, ctx.ctu_qp);
+    let map_qp = ctx.cu_qp();
+    mark_maps_inter(ctx, x0, y0, n, nz > 0, mv, map_qp);
     Ok((dist, any))
 }
 
@@ -1669,7 +1677,8 @@ fn emit_skip(
     let _ = src;
     ctx.grid.fill_cu(x0, y0, n, Some((mv, 0)), false, true, log2_to_depth(log2), None);
     ctx.mark_cu(x0, y0, n);
-    mark_maps_inter(ctx, x0, y0, n, false, mv, ctx.ctu_qp);
+    let map_qp = ctx.cu_qp();
+    mark_maps_inter(ctx, x0, y0, n, false, mv, map_qp);
     Ok((ssd(orig, n, pred, n, n, n), false))
 }
 
@@ -1800,7 +1809,8 @@ fn code_cu(
         let _ = dist;
         ctx.grid.fill_cu(x0, y0, n, None, true, false, depth, Some(lm));
         ctx.mark_cu(x0, y0, n);
-        mark_maps_intra(ctx, x0, y0, n, cbf, ctx.ctu_qp);
+        let map_qp = ctx.cu_qp();
+        mark_maps_intra(ctx, x0, y0, n, cbf, map_qp);
     } else {
         // P: skip/merge/AMVP RD.
         let rp = ref_pic.ok_or_else(|| Error::InvalidConfig("P picture without a reference".to_string()))?;

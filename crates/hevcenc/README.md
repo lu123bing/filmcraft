@@ -40,7 +40,7 @@ for p in enc.flush() { /* ... */ }
 | Profile | Main (CABAC, I/P); 4:2:0 8-bit, frame coding, single slice |
 | Parameter sets | VPS, SPS (level auto-selected from size/rate, conformance window, VUI: SAR, colour description, timing), PPS, AUD, user-data SEI, `hvcC` |
 | Intra | 35 modes (planar, DC, 33 angular) with SATD shortlist, 8x8–32x32 CUs |
-| Inter P | integer motion search with half-sample refinement (SATD), P_Skip with the normative merge candidate |
+| Inter P | hexagon integer search plus half/quarter-pel SATD refinement (Speed: half-pel only), skip/merge/AMVP 2Nx2N |
 | Residual | 4x4–32x32 integer transforms, 4x4 DST for luma intra, deadzone quantisation (intra 1/3, inter 1/6) |
 | Entropy | CABAC (all Main I/P syntax elements, initType 0/1) |
 | Loop filter | normative deblocking in the reconstruction loop (SAO off) |
@@ -55,12 +55,12 @@ and must print nothing, produce exactly the number of frames encoded, and be **b
 encoder's reconstruction** — covering I/P mixes, odd sizes and length-prefixed output re-wrapped with
 the `hvcC` parameter sets. Display order is checked with ffprobe.
 
-Results are reported here once the slice encoder lands.
+`bit_exact_vs_recon` passes on five cases x six frames (luma and chroma).
 
 ## Limitations / not yet implemented (follow-ups)
 
 - No B-frames (`bframes` must be 0), single reference picture, no weighted prediction.
 - No SAO, no tiles/WPP, no PCM, no transform skip, no scaling lists, no Main 10.
 - No trellis quantisation; no HRD SEI (VBV is enforced internally only); no 2-pass VBR yet.
-- Fixed SPLIT-free CU choice per preset is adaptive only by variance (full RDO quad-tree later).
+- CU splits selected by SATD plus split-bit cost (full RDO quad-tree later).
 - Threading is lookahead/analysis only (no slice- or frame-level pipelining yet).

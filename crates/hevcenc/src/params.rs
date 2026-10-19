@@ -116,8 +116,8 @@ fn write_vui(w: &mut BitWriter, sar: (u16, u16), color: ColorConfig, fps_num: u3
     w.write_bit(true); // motion_vectors_over_pic_boundaries_flag
     w.write_bit(true); // restricted_ref_pic_lists_flag: slices always use the SPS RPS
     w.write_ue(0); // min_spatial_segmentation_idc
-    w.write_ue(2); // max_bytes_per_pic_denom
-    w.write_ue(1); // max_bits_per_min_cu_denom
+    w.write_ue(0); // max_bytes_per_pic_denom: no limit (not enforced by the encoder)
+    w.write_ue(0); // max_bits_per_min_cu_denom: no limit
     w.write_ue(8); // log2_max_mv_length_horizontal (±256 luma samples)
     w.write_ue(8); // log2_max_mv_length_vertical
 }
