@@ -188,8 +188,8 @@ fn mp4_ms_rounded(rate: FrameRate) -> Arc<[u8]> {
 }
 
 /// #1700: the frame rate came from the median sample duration. Times rounded to whole milliseconds
-/// leave a 30 fps clip's durations at 2970 and 3060 units (median 3060) and a 60 fps clip's at 1440
-/// and 1530, so the clip read as 30.303 / 58.824 fps: New Sequence From Clip made a sequence at
+/// leave a 30 fps clip's durations at 2970, 2970 and 3060 units (median 2970) and a 60 fps clip's at
+/// 1530 and 1440, so the clip read as 30.303 / 58.824 fps: New Sequence From Clip made a sequence at
 /// that rate and five of its 240 frames were never shown or exported. The clip reads as the rate
 /// its rounded durations average to, and its pictures snap onto that rate's grid.
 #[test]
@@ -214,6 +214,32 @@ fn mp4_90k(durations: &[u32]) -> Arc<[u8]> {
         w.write_sample(t, WriteSample { data: &picture(k), duration, composition_offset: 0, is_sync: true }).unwrap();
     }
     w.finish().unwrap().into_inner().into()
+}
+
+/// A sample's `stts` duration is a plain `u32`, so a hostile file can carry one near the top of the
+/// range: the rate window is computed for every file the opener reads and must not wrap (a debug
+/// build panics on the multiply, a release build let the outlier into the mean).
+#[test]
+fn mp4_with_huge_sample_durations_opens_at_a_usable_rate() {
+    // two durations a whole `u32` apart: no mean of them is a frame rate, so the default rate
+    let src = crate::open_bytes("synthetic.mov", mp4_90k(&[1, u32::MAX])).unwrap();
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::default()));
+    // 30 fps with one duration 2^30 above the median: `* 4` wrapped to 0 in a release build and the
+    // outlier joined the mean, which read this track as 0.005 fps
+    let mut durations = vec![3000u32; 60];
+    durations.push(1_073_744_824);
+    let src = crate::open_bytes("synthetic.mov", mp4_90k(&durations)).unwrap();
+    assert_eq!(src.info().video.as_ref().map(|v| v.frame_rate), Some(FrameRate::FPS_30));
+}
+
+/// The standard-rate window is 0.5% because the averaged 30 fps clips in #1700 sit that far out:
+/// 30.02 (0.067%) and 29.95 (0.067% from 29.97) are read as the standard rate they are near, and a
+/// tenth of the window — 0.015 fps at 30 — would leave both where they are.
+#[test]
+fn mp4_with_average_durations_just_off_a_standard_rate_read_as_it() {
+    let read = |durations: &[u32]| crate::open_bytes("synthetic.mov", mp4_90k(durations)).unwrap().info().video.as_ref().map(|v| v.frame_rate);
+    assert_eq!(read(&[2998; 90]), Some(FrameRate::FPS_30), "30.02 fps");
+    assert_eq!(read(&[3005; 90]), Some(FrameRate::FPS_29_97), "29.95 fps");
 }
 
 /// Files that are not a constant rate gone slightly off its grid keep their own times: whatever is

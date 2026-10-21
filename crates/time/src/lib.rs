@@ -752,6 +752,9 @@ mod tests {
         assert_eq!(FrameRate::from_f64_within(60.005, 0.005), FrameRate::FPS_60);
         // the nearest standard rate wins when two are in range
         assert_eq!(FrameRate::from_f64_within(59.99, 0.005), FrameRate::FPS_60);
+        // so a 29.9 fps average is nearer 29.97 than 30, and 0.5% reaches a 59.73 one, 0.35% off
+        assert_eq!(FrameRate::from_f64_within(29.9, 0.005), FrameRate::FPS_29_97);
+        assert_eq!(FrameRate::from_f64_within(59.73, 0.005), FrameRate::FPS_59_94);
         // a rate that is near no standard rate keeps its own value, as `from_f64` does
         assert_eq!(FrameRate::from_f64_within(20.0, 0.005), FrameRate::new(20, 1));
         assert_eq!(FrameRate::from_f64_within(37.516, 0.005), FrameRate::from_f64(37.516));

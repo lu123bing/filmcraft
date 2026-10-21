@@ -21,9 +21,15 @@ use crate::{CodecError, make_video_decoder};
 /// Most bytes read from one AAC access unit when probing for HE-AAC at open (8 channels × 6144 bits).
 const MAX_AAC_PROBE_UNIT: usize = 8 * 6144 / 8;
 
-/// How far a track's nominal rate may sit from a standard rate and still be read as it. Timestamps
-/// rounded to a coarse unit (whole milliseconds in a 90 kHz track, as phones and messaging apps
-/// write them) move the average by less than this, at every rate a phone records (#1700).
+/// How far a track's nominal rate may sit from a standard rate and still be read as it.
+///
+/// Whole-millisecond frame times (#1700) move the mean duration by at most one timestamp unit over
+/// the whole track, so the bound is relative to the clip's length: 0.5% of a 200 ms clip at 30 fps,
+/// 0.025% of the four-second clips in that report. A tenth of this window would leave a clip that
+/// averages 29.95 or 59.73 where it is, and the report's averages are further off than the rounding
+/// bound (0.35% for a 60 fps one). Re-timing stays guarded by the quarter-frame check in
+/// [`snap_to_frame_grid`]: the reported rate can change, but a clip whose pictures are not on that
+/// grid keeps its times.
 const STANDARD_RATE_TOLERANCE: f64 = 0.005;
 
 /// A video track's nominal frame rate: the mean of the sample durations within a quarter frame of
@@ -32,13 +38,17 @@ const STANDARD_RATE_TOLERANCE: f64 = 0.005;
 /// A duration within a quarter frame of the median is one frame's rounding; a longer one is a
 /// picture the file holds longer (variable rate), and averaging it in would move the rate off the
 /// frames that do repeat. The mean is what the median cannot see: whole-millisecond timestamps
-/// leave a 30 fps clip's durations alternating 2970 and 3060 units of a 90 kHz timescale, and the
-/// median, either of them, read the clip as 30.303 fps instead of the 30 their mean is (#1700).
+/// leave a 30 fps clip's durations at 2970, 2970 and 3060 units of a 90 kHz timescale, and their
+/// median, 2970, read the clip as 30.303 fps instead of the 30 their mean is (#1700).
 fn nominal_rate(timescale: u32, samples: &[Sample]) -> Option<FrameRate> {
     let mut durs: Vec<u32> = samples.iter().map(|s| s.duration).filter(|&d| d > 0).collect();
     durs.sort_unstable();
     let &median = durs.get(durs.len() / 2)?;
-    let near: Vec<f64> = durs.iter().filter(|&&d| d.abs_diff(median) * 4 <= median).map(|&d| f64::from(d)).collect();
+    // A track's durations come from its `stts` as plain `u32`s, so a hostile file can hold one near
+    // the top of the range: widen before multiplying, or the window compare wraps (and panics in a
+    // debug build) on a duration more than a quarter of the range away from the median.
+    let window = u64::from(median);
+    let near: Vec<f64> = durs.iter().filter(|&&d| u64::from(d.abs_diff(median)) * 4 <= window).map(|&d| f64::from(d)).collect();
     let mean = near.iter().sum::<f64>() / near.len().max(1) as f64;
     if mean <= 0.0 {
         return None;
